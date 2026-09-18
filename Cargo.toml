@@ -25,6 +25,7 @@ default = []
 [dependencies]
 chrono = "0.4"
 lazy_static = "1"
+libc = "0.2.189"
 ts3plugin-sys = "0.5"
 
 [build-dependencies]

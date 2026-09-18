@@ -86,6 +86,9 @@ pub trait Plugin: 'static + Send {
 	) {
 	}
 
+	/// Initialize plugin menus.
+	fn init_menus(&mut self) -> Vec<crate::PluginMenuItem> { vec![] }
+
 	/// Callback for when the settings menu in TS3 is pressed
 	fn configure(&mut self, api: &crate::TsApi) {}
 

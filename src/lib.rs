@@ -1073,6 +1073,8 @@ pub struct TsApi {
 	servers: Map<ServerId, ServerData>,
 	/// The plugin id from TeamSpeak.
 	plugin_id: String,
+	/// Callbacks stored for menu entries
+	menu_callbacks: Vec<MenuCallback>,
 }
 
 // Don't provide a default Implementation because we don't want the TsApi
@@ -1080,7 +1082,7 @@ pub struct TsApi {
 impl TsApi {
 	/// Create a new TsApi instance without loading anything.
 	fn new(plugin_id: String) -> TsApi {
-		TsApi { servers: Map::new(), plugin_id: plugin_id }
+		TsApi { servers: Map::new(), plugin_id, menu_callbacks: vec![] }
 	}
 
 	/// Load all currently connected server and their data.
@@ -1372,5 +1374,52 @@ impl TsApi {
 				.expect("Functions should be loaded")
 				.get_plugin_path)(p, l, to_cstring!(self.plugin_id.as_str()).as_ptr())
 		})
+	}
+}
+
+// ********** PluginMenuItem **********
+
+pub enum PluginMenuType {
+	/// "Plugins" menu in menu bar of main window
+	Global,
+	/// Channel context menu
+	Channel,
+	/// Client context menu
+	Client,
+}
+
+type MenuCallback = fn(plugin: &mut dyn Plugin, api: &crate::TsApi, server: &crate::Server);
+
+pub struct PluginMenuItem {
+	r#type: PluginMenuType,
+	/// The menu text, max length is 128 characters
+	text: String,
+	/// The optional icon path, max length is 128 characters.
+	icon_path: Option<String>,
+	/// The callback that will be triggered if the menu is clicked
+	callback: Option<MenuCallback>,
+}
+
+impl PluginMenuItem {
+	pub fn new(r#type: PluginMenuType, text: String) -> PluginMenuItem {
+		assert!(text.len() <= 128, "The text can be at most 128 characters long");
+		PluginMenuItem { r#type, text, icon_path: None, callback: None }
+	}
+
+	/// Sets the optional icon path
+	///
+	/// Icons are loaded from a subdirectory in the TeamSpeak client plugins folder. The subdirectory \
+	/// must be named like the plugin filename, without dll/so/dylib suffix e.g. for `"test_plugin.dll"`, \
+	/// icon `"1.png"` is loaded from `<TeamSpeak 3 Client install dir>\plugins\test_plugin\1.png`
+	pub fn icon(mut self, icon_path: String) -> Self {
+		assert!(icon_path.len() <= 128, "The icon path can be at most 128 characters long");
+		self.icon_path = Some(icon_path);
+		self
+	}
+
+	/// Sets an optional click callback
+	pub fn on_click(mut self, click_event: MenuCallback) -> Self {
+		self.callback = Some(click_event);
+		self
 	}
 }

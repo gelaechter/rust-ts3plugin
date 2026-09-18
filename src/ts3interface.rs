@@ -1,11 +1,16 @@
-use std::ffi::CStr;
-use std::mem::transmute;
-use std::os::raw::{c_char, c_int, c_short, c_uint};
-use std::slice;
-use std::sync::Mutex;
+use std::{
+	ffi::{CStr, CString, c_void},
+	mem::transmute,
+	os::raw::{c_char, c_int, c_short, c_uint},
+	ptr, slice,
+	sync::Mutex,
+};
 
-use ts3plugin_sys::public_definitions::*;
-use ts3plugin_sys::ts3functions::Ts3Functions;
+use ts3plugin_sys::{
+	plugin_definitions::{MENU_BUFSZ, MenuItem, MenuType},
+	public_definitions::*,
+	ts3functions::Ts3Functions,
+};
 
 use crate::plugin::Plugin;
 
@@ -1315,3 +1320,111 @@ pub unsafe extern "C" fn ts3plugin_processCommand(server_id: u64, command: *cons
 	let server = api.get_server_unwrap(server_id);
 	if plugin.process_command(api, &server, to_string!(command)) { 0 } else { 1 }
 }}
+
+fn string_to_c_array<const N: usize>(value: &str) -> [c_char; N] {
+	let c_string = CString::new(value).expect("string contains an interior NUL byte");
+
+	let bytes = c_string.as_bytes_with_nul();
+
+	assert!(bytes.len() <= N, "string is too long for the C buffer");
+
+	let mut output = [0 as c_char; N];
+
+	for (destination, source) in output.iter_mut().zip(bytes) {
+		*destination = *source as c_char;
+	}
+
+	output
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+#[doc(hidden)]
+pub unsafe extern "C" fn ts3plugin_initMenus(
+	menu_items: *mut *mut *mut MenuItem, menu_icon: *mut *mut c_char,
+) {
+	unsafe {
+		let mut data = DATA.lock().unwrap();
+		let data = data.0.as_mut().unwrap();
+		let api = &mut data.0;
+		let plugin = &mut data.1;
+		let menus = plugin.init_menus();
+
+		if menu_items.is_null() || menu_icon.is_null() {
+			error!(api, "menu_items or menu_icon are null", (menu_items, menu_icon));
+			return;
+		}
+
+		ptr::write(menu_items, ptr::null_mut());
+		ptr::write(menu_icon, ptr::null_mut());
+
+		let c_menu_items = libc::calloc(
+			menus.len() + 1, // C expects one additional null pointer after the menu items.
+			std::mem::size_of::<*mut MenuItem>(),
+		) as *mut *mut MenuItem;
+
+		if c_menu_items.is_null() {
+			error!(api, "c_menu_items is null", (c_menu_items));
+			return;
+		}
+
+		ptr::write(menu_items, c_menu_items);
+		ptr::write(menu_icon, ptr::null_mut());
+
+		for (index, rust_item) in menus.iter().enumerate() {
+			let c_item = libc::malloc(std::mem::size_of::<MenuItem>()) as *mut MenuItem;
+
+			if c_item.is_null() {
+				error!(api, "c_item is null", (c_item));
+				return;
+			}
+
+			let item = MenuItem {
+				type_name: match rust_item.r#type {
+					crate::PluginMenuType::Global => MenuType::Global,
+					crate::PluginMenuType::Channel => MenuType::Channel,
+					crate::PluginMenuType::Client => MenuType::Client,
+				},
+				id: index as c_uint,
+				text: string_to_c_array::<MENU_BUFSZ>(&rust_item.text),
+				icon: string_to_c_array::<MENU_BUFSZ>(rust_item.icon_path.as_deref().unwrap_or("")),
+			};
+
+			ptr::write(c_item, item);
+			ptr::write(c_menu_items.add(index), c_item);
+		}
+
+		api.menu_callbacks =
+			menus.into_iter().map(|x| x.callback.unwrap_or(|_, _, _| {})).collect();
+	}
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+#[doc(hidden)]
+pub unsafe extern "C" fn ts3plugin_onMenuItemEvent(
+	server_connection_handler_id: u64, _type: MenuType, menu_item_id: c_int, _selected_item_id: u64,
+) {
+	let mut data = DATA.lock().unwrap();
+	let data = data.0.as_mut().unwrap();
+	let api = &mut data.0;
+	let plugin = &mut data.1;
+
+	let server_id = crate::ServerId(server_connection_handler_id);
+	let server = api.get_server_unwrap(server_id);
+
+	if let Some(callback) = api.menu_callbacks.get(menu_item_id as usize) {
+		(callback)(&mut **plugin, api, &server)
+	}
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+#[doc(hidden)]
+pub unsafe extern "C" fn ts3plugin_freeMemory(data: *mut c_void) {
+	if !data.is_null() {
+		unsafe {
+			libc::free(data);
+		}
+	}
+}
